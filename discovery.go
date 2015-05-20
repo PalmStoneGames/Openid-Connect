@@ -22,6 +22,7 @@ import (
 	"net/http"
 
 	"github.com/gregjones/httpcache"
+	"golang.org/x/oauth2"
 )
 
 // DiscoveryHandler takes care of recovering DiscoveryInformation with caching
@@ -90,4 +91,11 @@ func (h *DiscoveryHandler) JwsHandler() (*JwsHandler, error) {
 		client: h.client,
 		url:    i.JwksURI,
 	}, nil
+}
+
+func (i *DiscoveryInfo) Endpoint() oauth2.Endpoint {
+	return oauth2.Endpoint{
+		AuthURL:  i.AuthorizationEndpoint,
+		TokenURL: i.TokenEndpoint,
+	}
 }

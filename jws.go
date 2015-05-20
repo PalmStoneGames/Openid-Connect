@@ -18,7 +18,6 @@ package connect
 
 import (
 	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,39 +76,31 @@ func (k *JwsKey) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-type urlEncodedByteSlice []byte
+type encodedByteSlice []byte
 
 // jwsKeyMarshal is a helper struct used for marshalling
 type jwsKeyMarshal struct {
-	Kty string              `json:"kty"`
-	Alg string              `json:"alg"`
-	Use string              `json:"use"`
-	Kid string              `json:"kid"`
-	N   urlEncodedByteSlice `json:"n"`
-	E   urlEncodedByteSlice `json:"e"`
+	Kty string           `json:"kty"`
+	Alg string           `json:"alg"`
+	Use string           `json:"use"`
+	Kid string           `json:"kid"`
+	N   encodedByteSlice `json:"n"`
+	E   encodedByteSlice `json:"e"`
 }
 
-func (d *urlEncodedByteSlice) MarshalJSON() ([]byte, error) {
-	// Make an array large enough to contain the encoded json string
-	raw := make([]byte, base64.URLEncoding.EncodedLen(len(*d))+2)
-
-	// Encode it and set double quotes
-	base64.URLEncoding.Encode(raw[1:len(raw)-1], *d)
-	raw[0] = quote
-	raw[len(raw)-1] = quote
-
-	return raw, nil
+func (d *encodedByteSlice) MarshalJSON() ([]byte, error) {
+	rawStr := jwt.EncodeSegment(*d)
+	return json.Marshal(rawStr)
 }
 
-func (d *urlEncodedByteSlice) UnmarshalJSON(raw []byte) error {
-	// Ensure we're actually dealing with a string, first and last character should be a double quote
-	if raw[0] != quote || raw[len(raw)-1] != quote {
-		return errors.New("Field is not a json string")
+func (d *encodedByteSlice) UnmarshalJSON(raw []byte) error {
+	var rawStr string
+	var err error
+	if err = json.Unmarshal(raw, &rawStr); err != nil {
+		return err
 	}
 
-	// Decode it
-	*d = make([]byte, base64.URLEncoding.DecodedLen(len(raw)-2))
-	_, err := base64.URLEncoding.Decode(*d, raw[1:len(raw)-1])
+	*d, err = jwt.DecodeSegment(rawStr)
 	return err
 }
 
@@ -151,24 +142,25 @@ func (h *JwsHandler) Info() (*JwsInfo, error) {
 // Verify verifies the passed token and, if valid, returns a validated jwt.Token
 // Which can then be used to fetch the claims and other data from it
 // this is a cryptographic operation and only needs to be done once, after initial verification, a call to token.Valid() to ensure it isn't expired is enough
-func (h *JwsHandler) Verify(token oauth2.Token) (*jwt.Token, error) {
+func (h *JwsHandler) Verify(token *oauth2.Token) (*jwt.Token, *rsa.PublicKey, error) {
 	if !token.Valid() {
-		return nil, errors.New("Passed token is invalid")
+		return nil, nil, errors.New("Passed token is invalid")
 	}
 
 	// Grab the id token string from the oauth2 token object
 	idTokenStr, ok := token.Extra("id_token").(string)
 	if !ok {
-		return nil, errors.New("Token did not have a valid id token")
+		return nil, nil, errors.New("Token did not have a valid id token")
 	}
 
 	// Grab the jws key information
 	info, err := h.Info()
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("Error while getting jws key info: %v", err)
 	}
 
 	// Parse it
+	var key *rsa.PublicKey
 	idToken, err := jwt.Parse(idTokenStr, func(tok *jwt.Token) (interface{}, error) {
 		kidRaw, ok := tok.Header["kid"]
 		if !ok {
@@ -182,7 +174,7 @@ func (h *JwsHandler) Verify(token oauth2.Token) (*jwt.Token, error) {
 
 		for _, k := range info.Keys {
 			if k.Kid == kid {
-				key := &rsa.PublicKey{
+				key = &rsa.PublicKey{
 					N: new(big.Int).SetBytes(k.N),
 					E: int(new(big.Int).SetBytes(k.E).Int64()),
 				}
@@ -195,8 +187,8 @@ func (h *JwsHandler) Verify(token oauth2.Token) (*jwt.Token, error) {
 	})
 
 	if err != nil {
-		return nil, err
+		return nil, key, fmt.Errorf("Error while parsing JWT token: %v", err)
 	}
 
-	return idToken, nil
+	return idToken, key, nil
 }
